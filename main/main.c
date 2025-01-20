@@ -352,11 +352,11 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
     char buf[100];
     char response[100];
     bool success = false;
+    int state = 0;
     
     // Get content length
     size_t recv_size = req->content_len;
     if (recv_size >= sizeof(buf)) {
-        // Response for too large payload
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
         return ESP_FAIL;
@@ -376,16 +376,19 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
     
     // Parse and set relay state
     if (strstr(buf, "\"state\":\"on\"")) {
-        relay_timer.enabled = false;
-        gpio_set_level(RELAY_GPIO, 1);
+        state = 1;  // Set to ON
         success = true;
     } else if (strstr(buf, "\"state\":\"off\"")) {
-        relay_timer.enabled = false;
-        gpio_set_level(RELAY_GPIO, 0);
+        state = 0;  // Set to OFF
         success = true;
     }
 
-    // Set response headers BEFORE sending response
+    if (success) {
+        relay_timer.enabled = false;  // Disable timer when manually setting state
+        gpio_set_level(RELAY_GPIO, state);  // Set the actual GPIO level
+    }
+
+    // Set response headers
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -393,16 +396,13 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
     if (success) {
         create_json_response(response, sizeof(response),
             "{\"status\":\"ok\",\"state\":\"%s\"}", 
-            gpio_get_level(RELAY_GPIO) ? "on" : "off");
+            state ? "on" : "off");  // Use the state we just set
     } else {
         create_json_response(response, sizeof(response),
             "{\"status\":\"error\",\"message\":\"Invalid request\"}");
     }
     
-    // Send the response
     ret = httpd_resp_sendstr(req, response);
-    
-    // Return appropriate status
     return (ret == ESP_OK) ? ESP_OK : ESP_FAIL;
 }
 
