@@ -1,0 +1,4 @@
+.venv
+.vscode
+build
+sensor_data.db
