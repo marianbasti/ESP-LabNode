@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import plotly.express as px
 import json
@@ -11,6 +11,7 @@ from queue import Queue
 import asyncio
 from collections import defaultdict
 import os
+from streamlit_cookies_controller import CookieController
 
 # Enhanced database setup
 def init_db():
@@ -143,52 +144,40 @@ import atexit
 atexit.register(cleanup)
 
 def check_password():
-    """Returns `True` if the user had the correct password or valid session."""
+    """Returns `True` if the user had the correct password."""
+    controller = CookieController()
     
-    # Check for existing valid session
-    if 'logged_in' in st.session_state:
+    # Check if already authenticated via cookie
+    auth_cookie = controller.get('auth_token')
+    if auth_cookie == os.environ.get("GUI_PW"):
         return True
-
-    # Check for session cookie
-    if st.session_state.get('session_cookie'):
-        cookie = st.session_state.get('session_cookie')
-        if cookie == os.environ.get("GUI_PW"):  # Simple token validation
-            st.session_state['logged_in'] = True
-            return True
-
+    
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         if "password" in st.session_state and st.session_state["password"] == os.environ.get("GUI_PW"):
-            st.session_state["logged_in"] = True
-            # Set session cookie for 1 year
-            st.session_state['session_cookie'] = os.environ.get("GUI_PW")  # Simple token
-            st.experimental_set_query_params()  # Clear URL parameters
-            
-            # Create persistent cookie
-            st.experimental_set_cookie(
-                "session_token",
-                os.environ.get("GUI_PW"),
-                max_age=31536000,  # 1 year in seconds
-                key="session_cookie"
-            )
+            st.session_state["password_correct"] = True
+            # Set authentication cookie
+            controller.set('auth_token', os.environ.get("GUI_PW"))
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
-    if "logged_in" not in st.session_state:
+    if "password_correct" not in st.session_state:
         # First run, show input for password
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         return False
-    elif not st.session_state.get("logged_in"):
+    elif not st.session_state["password_correct"]:
         # Password incorrect, show input + error
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
-    
-    return True
+    else:
+        # Password correct
+        return True
 
 # Streamlit interface
 def main():
@@ -200,6 +189,12 @@ def main():
         
     if not check_password():
         st.stop()  # Do not continue if password is incorrect
+    
+    # Add logout button in sidebar
+    if st.sidebar.button("Logout"):
+        controller = CookieController()
+        controller.remove('auth_token')
+        st.rerun()
     
     # Initialize database
     init_db()
