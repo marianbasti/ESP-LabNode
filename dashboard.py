@@ -82,9 +82,15 @@ def get_sensor_data(base_url):
 
 def set_relay_state(base_url, state):
     try:
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        data = f'{{"state":"{state}"}}'  # Format JSON string properly
+        
         response = requests.post(
-            f"{base_url}/api/relay", 
-            params={"state": state},
+            f"{base_url}/api/relay",
+            headers=headers,
+            data=data,  # Use data instead of params
             timeout=5.0
         )
         response.raise_for_status()
