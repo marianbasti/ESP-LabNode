@@ -143,37 +143,32 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
-def get_cookie_hash():
-    """Generate hash for cookie validation"""
+def get_auth_hash():
+    """Generate hash for authentication"""
     secret = os.environ.get("GUI_PW", "")
     return hashlib.sha256(f"{secret}:temcontrol".encode()).hexdigest()
 
 def check_password():
-    """Returns `True` if the user had the correct password or valid cookie."""
+    """Returns `True` if the user had the correct password or valid session."""
     
-    # Check for valid cookie first
-    cookie_name = "temcontrol_auth"
-    cookie_value = st.cookies.get(cookie_name)
-    if cookie_value is not None and cookie_value == get_cookie_hash():
+    # Check if already authenticated in this session
+    if "authenticated" in st.session_state and st.session_state["authenticated"]:
         return True
     
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         if "password" in st.session_state and st.session_state["password"] == os.environ.get("GUI_PW"):
-            st.session_state["password_correct"] = True
-            # Set cookie that expires in 7 days
-            expires = datetime.now() + timedelta(days=7)
-            st.cookies.set(cookie_name, get_cookie_hash(), expires=expires)
+            st.session_state["authenticated"] = True
             del st.session_state["password"]  # Delete password from session state
         else:
-            st.session_state["password_correct"] = False
+            st.session_state["authenticated"] = False
 
-    if "password_correct" not in st.session_state:
+    if "authenticated" not in st.session_state:
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         return False
-    elif not st.session_state["password_correct"]:
+    elif not st.session_state["authenticated"]:
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
