@@ -538,3 +538,120 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+class VideoStream:
+    def __init__(self, device_path):
+        self.device_path = device_path
+        self.running = False
+        self._video_fd = None
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def open(self):
+        try:
+            self._video_fd = os.open(self.device_path, os.O_RDWR)
+            # Set video format to MJPEG
+            fmt = struct.pack('LLLLLL', V4L2_PIX_FMT_MJPEG, V4L2_BUF_TYPE_VIDEO_CAPTURE, 640, 480, 0, 0)
+            fcntl.ioctl(self._video_fd, VIDIOC_ENUM_FMT, fmt)
+            logger.info(f"Successfully opened video device: {self.device_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to open video device {self.device_path}: {str(e)}")
+            self.close()
+            return False
+
+    def close(self):
+        if self._video_fd is not None:
+            try:
+                os.close(self._video_fd)
+                logger.info(f"Closed video device: {self.device_path}")
+            except Exception as e:
+                logger.error(f"Error closing video device: {str(e)}")
+            finally:
+                self._video_fd = None
+        self.running = False
+
+    def read_frame(self):
+        try:
+            # Read a complete JPEG frame
+            data = b''
+            while self.running:
+                chunk = os.read(self._video_fd, 4096)
+                if not chunk:
+                    break
+                data += chunk
+                # Look for JPEG end marker
+                if b'\xff\xd9' in data:
+                    return data
+            return None
+        except Exception as e:
+            logger.error(f"Error reading video frame: {str(e)}")
+            return None
+
+    def stream_to_placeholder(self, placeholder, stop_event):
+        self.running = True
+        error_count = 0
+        max_errors = 5
+
+        while self.running and not stop_event.is_set():
+            try:
+                frame_data = self.read_frame()
+                if frame_data:
+                    b64_frame = base64.b64encode(frame_data).decode()
+                    placeholder.image(
+                        f"data:image/jpeg;base64,{b64_frame}",
+                        use_column_width=True
+                    )
+                    error_count = 0
+                    time.sleep(0.1)  # Limit frame rate
+                else:
+                    error_count += 1
+                    if error_count >= max_errors:
+                        logger.error("Too many consecutive frame read errors")
+                        break
+            except Exception as e:
+                logger.error(f"Streaming error: {str(e)}")
+                break
+
+        self.close()
+
+# ...existing code until the video feed section in main()...
+
+        # Video feed display
+        video_sources = get_device_video_sources(selected_device.id)
+        if not video_sources.empty:
+            st.subheader("Video Feed")
+            selected_video = st.selectbox(
+                "Select video source",
+                video_sources.itertuples(),
+                format_func=lambda x: x.device_name
+            )
+            
+            stream_container = st.empty()
+            col1, col2 = st.columns([1, 4])
+            
+            with col1:
+                start_stream = st.button("Start Stream")
+                stop_stream = st.button("Stop Stream")
+
+            if 'stop_event' not in st.session_state:
+                st.session_state.stop_event = threading.Event()
+
+            if start_stream:
+                st.session_state.stop_event.clear()
+                try:
+                    with VideoStream(selected_video.device_path) as stream:
+                        stream.stream_to_placeholder(stream_container, st.session_state.stop_event)
+                except Exception as e:
+                    st.error(f"Failed to start video stream: {str(e)}")
+
+            if stop_stream:
+                st.session_state.stop_event.set()
+                stream_container.empty()
+
+# ...remaining existing code...
