@@ -8,7 +8,7 @@ import plotly.express as px
 import json
 import threading
 from queue import Queue
-import asyncio
+import asyncio, aiohttp
 from collections import defaultdict
 import os
 from streamlit_cookies_controller import CookieController
@@ -105,7 +105,29 @@ def set_relay_state(base_url, state):
     except ValueError as e:
         logger.error(f"Invalid JSON response from {base_url}: {str(e)}")
         return None
-    
+
+async def set_relay_state_async(base_url, state):
+    try:
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        data = f'{{"state":"{state}"}}'
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{base_url}/api/relay",
+                headers=headers,
+                data=data,
+                timeout=2.0
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+                logger.info(f"Relay state set to {state} for {base_url}")
+                return result
+    except Exception as e:
+        logger.error(f"Failed to set relay state for {base_url}: {str(e)}")
+        return None
+
 def get_timer_config(base_url):
     try:
         response = requests.get(f"{base_url}/api/timer")
@@ -311,20 +333,38 @@ def show_dashboard_page(selected_device):
         with control_cols[0]:
             st.markdown("#### Manual Control")
             control_cols_inner = st.columns(2)
+            
+            # Add session state for button loading states
+            if 'button_loading' not in st.session_state:
+                st.session_state.button_loading = False
+            
             with control_cols_inner[0]:
-                if st.button("🟢 Turn ON", use_container_width=True):
-                    with st.spinner('Updating...'):
-                        if set_relay_state(selected_device.url, "on"):
-                            st.success("Device turned ON")
-                        else:
-                            st.error("Failed to turn device ON")
+                if st.button("🟢 Turn ON", 
+                            use_container_width=True, 
+                            disabled=st.session_state.button_loading):
+                    placeholder = st.empty()
+                    placeholder.info("Turning ON...")
+                    st.session_state.button_loading = True
+                    result = set_relay_state(selected_device.url, "on")
+                    if result:
+                        placeholder.success("Device turned ON")
+                    else:
+                        placeholder.error("Failed to turn device ON")
+                    st.session_state.button_loading = False
+                    
             with control_cols_inner[1]:
-                if st.button("🔴 Turn OFF", use_container_width=True):
-                    with st.spinner('Updating...'):
-                        if set_relay_state(selected_device.url, "off"):
-                            st.success("Device turned OFF")
-                        else:
-                            st.error("Failed to turn device OFF")
+                if st.button("🔴 Turn OFF", 
+                            use_container_width=True,
+                            disabled=st.session_state.button_loading):
+                    placeholder = st.empty()
+                    placeholder.info("Turning OFF...")
+                    st.session_state.button_loading = True
+                    result = set_relay_state(selected_device.url, "off")
+                    if result:
+                        placeholder.success("Device turned OFF")
+                    else:
+                        placeholder.error("Failed to turn device OFF")
+                    st.session_state.button_loading = False
 
         with control_cols[1]:
             st.markdown("#### Timer Settings")
