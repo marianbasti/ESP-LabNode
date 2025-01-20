@@ -357,6 +357,7 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
     size_t recv_size = req->content_len;
     if (recv_size >= sizeof(buf)) {
         // Response for too large payload
+        httpd_resp_set_type(req, "application/json");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
         return ESP_FAIL;
     }
@@ -365,6 +366,7 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
     int ret = httpd_req_recv(req, buf, recv_size);
     if (ret <= 0) {
         if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_set_type(req, "application/json");
             httpd_resp_send_408(req);
         }
         return ESP_FAIL;
@@ -383,10 +385,9 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
         success = true;
     }
 
-    // Set response headers
+    // Set response headers BEFORE sending response
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Connection", "close");
 
     // Send appropriate response
     if (success) {
@@ -398,8 +399,11 @@ static esp_err_t relay_post_handler(httpd_req_t *req) {
             "{\"status\":\"error\",\"message\":\"Invalid request\"}");
     }
     
-    httpd_resp_sendstr(req, response);
-    return ESP_OK;
+    // Send the response
+    ret = httpd_resp_sendstr(req, response);
+    
+    // Return appropriate status
+    return (ret == ESP_OK) ? ESP_OK : ESP_FAIL;
 }
 
 static esp_err_t timer_handler(httpd_req_t *req) {

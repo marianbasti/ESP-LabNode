@@ -82,12 +82,9 @@ def get_sensor_data(base_url):
 
 def set_relay_state(base_url, state):
     try:
-        # Add timeout and headers
-        headers = {'Connection': 'close'}
         response = requests.post(
             f"{base_url}/api/relay", 
             params={"state": state},
-            headers=headers,
             timeout=5.0
         )
         response.raise_for_status()
@@ -102,7 +99,7 @@ def set_relay_state(base_url, state):
     except ValueError as e:
         logger.error(f"Invalid JSON response from {base_url}: {str(e)}")
         return None
-
+    
 def get_timer_config(base_url):
     try:
         response = requests.get(f"{base_url}/api/timer")
