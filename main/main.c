@@ -102,6 +102,13 @@ static const httpd_uri_t relay_uri = {
 
 static const httpd_uri_t timer_uri = {
     .uri       = "/api/timer",
+    .method    = HTTP_GET,    // Changed to GET
+    .handler   = timer_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t timer_post_uri = {    // Added new URI for POST
+    .uri       = "/api/timer",
     .method    = HTTP_POST,
     .handler   = timer_handler,
     .user_ctx  = NULL
@@ -129,7 +136,8 @@ static httpd_handle_t start_webserver(void) {
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_register_uri_handler(server, &sensor_uri);
         httpd_register_uri_handler(server, &relay_uri);
-        httpd_register_uri_handler(server, &timer_uri);
+        httpd_register_uri_handler(server, &timer_uri);        // Register GET handler
+        httpd_register_uri_handler(server, &timer_post_uri);   // Register POST handler
         httpd_register_uri_handler(server, &hostname_get_uri);
         httpd_register_uri_handler(server, &hostname_post_uri);
         return server;
