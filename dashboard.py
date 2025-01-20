@@ -43,8 +43,16 @@ def init_db():
                       temperature REAL,
                       humidity REAL,
                       FOREIGN KEY(device_id) REFERENCES devices(id))''')
+        # Add new columns for humidity control
+        c.execute('''ALTER TABLE devices ADD COLUMN humidity_control INTEGER DEFAULT 0''')
+        c.execute('''ALTER TABLE devices ADD COLUMN humidity_threshold REAL DEFAULT 0.0''')
+        c.execute('''ALTER TABLE devices ADD COLUMN humidity_on_time INTEGER DEFAULT 300''')
+        c.execute('''ALTER TABLE devices ADD COLUMN humidity_cooldown INTEGER DEFAULT 600''')
         conn.commit()
         logger.info("Database initialized successfully")
+    except sqlite3.OperationalError as e:
+        if 'duplicate column' not in str(e):
+            raise
     except Exception as e:
         logger.error(f"Database initialization failed: {str(e)}\n{traceback.format_exc()}")
         raise
@@ -167,6 +175,25 @@ def update_device_frequency(device_id, frequency):
         logger.info(f"Updated reading frequency for device ID {device_id} to {frequency} seconds")
     except Exception as e:
         logger.error(f"Error updating reading frequency for device ID {device_id}: {str(e)}\n{traceback.format_exc()}")
+    finally:
+        conn.close()
+
+# Add new functions for humidity control settings
+def update_humidity_settings(device_id, enabled, threshold, on_time, cooldown):
+    conn = sqlite3.connect('sensor_data.db')
+    c = conn.cursor()
+    try:
+        c.execute("""UPDATE devices 
+                     SET humidity_control = ?, 
+                         humidity_threshold = ?,
+                         humidity_on_time = ?,
+                         humidity_cooldown = ?
+                     WHERE id = ?""", 
+                 (enabled, threshold, on_time, cooldown, device_id))
+        conn.commit()
+        logger.info(f"Updated humidity settings for device ID {device_id}")
+    except Exception as e:
+        logger.error(f"Error updating humidity settings: {str(e)}")
     finally:
         conn.close()
 
@@ -304,6 +331,39 @@ def show_dashboard_page(selected_device):
                             st.success("Timer updated successfully")
                         else:
                             st.error("Failed to update timer")
+
+        # Add after the Timer Settings section
+        with control_cols[1]:
+            st.markdown("#### Humidity Control")
+            humidity_control = st.toggle("Enable Humidity Control", 
+                                        value=bool(selected_device.humidity_control))
+            
+            humidity_cols = st.columns([2, 2, 2])
+            with humidity_cols[0]:
+                threshold = st.number_input("Humidity Threshold (%)",
+                                        value=float(selected_device.humidity_threshold),
+                                        min_value=0.0,
+                                        max_value=100.0,
+                                        step=1.0)
+            with humidity_cols[1]:
+                on_time = st.number_input("On Duration (seconds)",
+                                        value=int(selected_device.humidity_on_time),
+                                        min_value=0,
+                                        step=60)
+            with humidity_cols[2]:
+                cooldown = st.number_input("Minimum Interval (seconds)",
+                                        value=int(selected_device.humidity_cooldown),
+                                        min_value=0,
+                                        step=60)
+
+            if st.button("💾 Save Humidity Settings", use_container_width=True):
+                with st.spinner('Updating humidity settings...'):
+                    update_humidity_settings(selected_device.id, 
+                                        int(humidity_control),
+                                        threshold,
+                                        on_time,
+                                        cooldown)
+                    st.success("Humidity settings updated successfully")
 
         # Historical data with improved visuals
         st.markdown("### 📈 Historical Data")

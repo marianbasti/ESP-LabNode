@@ -16,10 +16,18 @@ class DeviceCollector:
         self.collectors = {}
         self.stop_flags = defaultdict(Event)
         self.main_stop_flag = Event()
+        self.last_activation = defaultdict(int)
         
     def get_sensor_data(self, base_url):
         try:
             response = requests.get(f"{base_url}/api/sensor")
+            return response.json()
+        except:
+            return None
+
+    def set_relay_state(self, base_url, state):
+        try:
+            response = requests.post(f"{base_url}/api/relay", params={"state": state})
             return response.json()
         except:
             return None
@@ -33,15 +41,42 @@ class DeviceCollector:
         conn.close()
 
     def collect_device_data(self, device_id, device_url, frequency):
+        conn = sqlite3.connect('sensor_data.db')
+        c = conn.cursor()
+        
         while not self.stop_flags[device_id].is_set() and not self.main_stop_flag.is_set():
             try:
-                data = self.get_sensor_data(device_url)
-                if data and 'error' not in data:
-                    self.store_reading(device_id, data['temperature'], data['humidity'])
-                    logging.info(f"Collected data for device {device_id}: {data}")
+                # Get device settings
+                c.execute("""SELECT humidity_control, humidity_threshold, 
+                           humidity_on_time, humidity_cooldown 
+                           FROM devices WHERE id = ?""", (device_id,))
+                settings = c.fetchone()
+                
+                if settings and settings[0]:  # If humidity control is enabled
+                    humidity_control, threshold, on_time, cooldown = settings
+                    current_time = time.time()
+                    
+                    data = self.get_sensor_data(device_url)
+                    if data and 'error' not in data:
+                        self.store_reading(device_id, data['temperature'], data['humidity'])
+                        
+                        # Check humidity threshold and timing conditions
+                        if (data['humidity'] < threshold and 
+                            current_time - self.last_activation[device_id] >= cooldown):
+                            # Turn on the device
+                            if self.set_relay_state(device_url, "on"):
+                                logging.info(f"Turned ON device {device_id} due to humidity {data['humidity']} below {threshold}")
+                                time.sleep(on_time)  # Keep on for specified duration
+                                self.set_relay_state(device_url, "off")
+                                self.last_activation[device_id] = current_time
+                                logging.info(f"Turned OFF device {device_id} after {on_time} seconds")
+                
             except Exception as e:
-                logging.error(f"Error collecting data for device {device_id}: {e}")
+                logging.error(f"Error in humidity control for device {device_id}: {e}")
+            
             time.sleep(frequency)
+        
+        conn.close()
 
     def start_collector(self, device_id, device_url, frequency):
         if device_id in self.collectors:
