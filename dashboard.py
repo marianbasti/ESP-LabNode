@@ -10,6 +10,7 @@ import threading
 from queue import Queue
 import asyncio
 from collections import defaultdict
+import os
 
 # Enhanced database setup
 def init_db():
@@ -141,9 +142,43 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if "password" in st.session_state and st.session_state["password"] == os.environ.get("GUI_PW"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Delete password from session state
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
+
 # Streamlit interface
 def main():
     st.set_page_config(page_title="Temperature Control Dashboard", layout="wide")
+    
+    if not os.environ.get("GUI_PW"):
+        st.error("Environment variable GUI_PW not set!")
+        return
+        
+    if not check_password():
+        st.stop()  # Do not continue if password is incorrect
     
     # Initialize database
     init_db()
