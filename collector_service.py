@@ -17,6 +17,7 @@ class DeviceCollector:
         self.stop_flags = defaultdict(Event)
         self.main_stop_flag = Event()
         self.last_activation = defaultdict(int)
+        self.timer_states = defaultdict(lambda: {"last_switch": 0, "current_state": "off"})
         
     def get_sensor_data(self, base_url):
         try:
@@ -40,6 +41,13 @@ class DeviceCollector:
         conn.commit()
         conn.close()
 
+    def get_timer_config(self, base_url):
+        try:
+            response = requests.get(f"{base_url}/api/timer")
+            return response.json()
+        except:
+            return None
+
     def collect_device_data(self, device_id, device_url, frequency):
         conn = sqlite3.connect('sensor_data.db')
         c = conn.cursor()
@@ -52,27 +60,52 @@ class DeviceCollector:
                            FROM devices WHERE id = ?""", (device_id,))
                 settings = c.fetchone()
                 
-                if settings and settings[0]:  # If humidity control is enabled
-                    humidity_control, threshold, on_time, cooldown = settings
-                    current_time = time.time()
+                # Get timer configuration
+                timer_config = self.get_timer_config(device_url)
+                current_time = time.time()
+                
+                # Handle timer control
+                if timer_config and timer_config.get('enabled'):
+                    timer_state = self.timer_states[device_id]
+                    on_duration = timer_config.get('onDuration', 0)
+                    off_duration = timer_config.get('offDuration', 0)
                     
+                    if timer_state["current_state"] == "off" and current_time - timer_state["last_switch"] >= off_duration:
+                        self.set_relay_state(device_url, "on")
+                        timer_state["current_state"] = "on"
+                        timer_state["last_switch"] = current_time
+                        logging.info(f"Timer turned ON device {device_id}")
+                    elif timer_state["current_state"] == "on" and current_time - timer_state["last_switch"] >= on_duration:
+                        self.set_relay_state(device_url, "off")
+                        timer_state["current_state"] = "off"
+                        timer_state["last_switch"] = current_time
+                        logging.info(f"Timer turned OFF device {device_id}")
+                
+                # Handle humidity control only if timer is not enabled
+                elif settings and settings[0] and not (timer_config and timer_config.get('enabled')):
+                    humidity_control, threshold, on_time, cooldown = settings
                     data = self.get_sensor_data(device_url)
+                    
                     if data and 'error' not in data:
                         self.store_reading(device_id, data['temperature'], data['humidity'])
                         
-                        # Check humidity threshold and timing conditions
                         if (data['humidity'] < threshold and 
                             current_time - self.last_activation[device_id] >= cooldown):
-                            # Turn on the device
-                            if self.set_relay_state(device_url, "on"):
-                                logging.info(f"Turned ON device {device_id} due to humidity {data['humidity']} below {threshold}")
-                                time.sleep(on_time)  # Keep on for specified duration
-                                self.set_relay_state(device_url, "off")
-                                self.last_activation[device_id] = current_time
-                                logging.info(f"Turned OFF device {device_id} after {on_time} seconds")
+                            self.set_relay_state(device_url, "on")
+                            logging.info(f"Turned ON device {device_id} due to humidity {data['humidity']} below {threshold}")
+                            time.sleep(on_time)
+                            self.set_relay_state(device_url, "off")
+                            self.last_activation[device_id] = current_time
+                            logging.info(f"Turned OFF device {device_id} after {on_time} seconds")
+                
+                # Get sensor data even if no control is active
+                if not (timer_config and timer_config.get('enabled')):
+                    data = self.get_sensor_data(device_url)
+                    if data and 'error' not in data:
+                        self.store_reading(device_id, data['temperature'], data['humidity'])
                 
             except Exception as e:
-                logging.error(f"Error in humidity control for device {device_id}: {e}")
+                logging.error(f"Error in device control loop for device {device_id}: {e}")
             
             time.sleep(frequency)
         
