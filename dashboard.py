@@ -12,6 +12,18 @@ import asyncio
 from collections import defaultdict
 import os
 from streamlit_cookies_controller import CookieController
+import fcntl
+import mmap
+import select
+import struct
+import array
+import base64
+
+# V4L2 constants
+VIDIOC_QUERYCAP = 0x80685600
+VIDIOC_ENUM_FMT = 0xc0405602
+V4L2_PIX_FMT_MJPEG = 0x47504A4D
+V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
 
 # Enhanced database setup
 def init_db():
@@ -28,6 +40,12 @@ def init_db():
                   device_id INTEGER,
                   temperature REAL,
                   humidity REAL,
+                  FOREIGN KEY(device_id) REFERENCES devices(id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS video_devices
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  device_path TEXT UNIQUE,
+                  device_name TEXT,
+                  device_id INTEGER,
                   FOREIGN KEY(device_id) REFERENCES devices(id))''')
     conn.commit()
     conn.close()
@@ -133,6 +151,53 @@ def get_historical_data(device_id, hours=24):
     df = pd.read_sql_query(query, conn, params=(device_id,), parse_dates=['timestamp'])
     conn.close()
     return df
+
+def get_available_video_devices():
+    video_devices = []
+    for i in range(64):
+        try:
+            device_path = f'/dev/video{i}'
+            with open(device_path, 'rb') as f:
+                # Query device capabilities
+                cap = array.array('B', [0] * 104)  # v4l2_capability struct
+                try:
+                    fcntl.ioctl(f, VIDIOC_QUERYCAP, cap)
+                    video_devices.append({
+                        'path': device_path,
+                        'name': cap[8:40].tobytes().decode().rstrip('\0')
+                    })
+                except:
+                    continue
+        except:
+            continue
+    return video_devices
+
+def add_video_device(device_path, device_name, device_id):
+    conn = sqlite3.connect('sensor_data.db')
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO video_devices (device_path, device_name, device_id) VALUES (?, ?, ?)",
+                 (device_path, device_name, device_id))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def get_device_video_sources(device_id):
+    conn = sqlite3.connect('sensor_data.db')
+    df = pd.read_sql_query("SELECT * FROM video_devices WHERE device_id = ?", 
+                          conn, params=(device_id,))
+    conn.close()
+    return df
+
+def remove_video_device(video_id):
+    conn = sqlite3.connect('sensor_data.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM video_devices WHERE id = ?", (video_id,))
+    conn.commit()
+    conn.close()
 
 # Initialize database and collector outside of main()
 init_db()
@@ -295,6 +360,35 @@ def main():
             update_device_frequency(selected_device.id, new_frequency)
             st.success(f"Updated reading frequency to {new_frequency} seconds")
 
+    # Video device management
+    with st.sidebar.expander("Video Devices"):
+        available_cameras = get_available_video_devices()
+        if available_cameras:
+            st.write("Available cameras:")
+            selected_camera = st.selectbox(
+                "Select camera",
+                options=available_cameras,
+                format_func=lambda x: f"{x['name']} ({x['path']})"
+            )
+            if st.button("Add Camera"):
+                if add_video_device(selected_camera['path'], 
+                                  selected_camera['name'],
+                                  selected_device.id):
+                    st.success("Camera added successfully")
+                else:
+                    st.error("Failed to add camera")
+        
+        st.write("Connected cameras:")
+        video_sources = get_device_video_sources(selected_device.id)
+        for _, video in video_sources.iterrows():
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"{video['device_name']} ({video['device_path']})")
+            with col2:
+                if st.button("Remove", key=f"remove_video_{video['id']}"):
+                    remove_video_device(video['id'])
+                    st.rerun()
+
     # Historical data visualization
     st.subheader("Historical Data")
     hours = st.slider("Time Window (hours)", 1, 72, 24)
@@ -310,6 +404,41 @@ def main():
         st.plotly_chart(fig2, use_container_width=True)
     else:
         st.info("No historical data available")
+
+    # Add video feed display after the timer configuration
+    video_sources = get_device_video_sources(selected_device.id)
+    if not video_sources.empty:
+        st.subheader("Video Feed")
+        selected_video = st.selectbox(
+            "Select video source",
+            video_sources.itertuples(),
+            format_func=lambda x: x.device_name
+        )
+        
+        if st.button("Start Stream"):
+            try:
+                with open(selected_video.device_path, 'rb') as video:
+                    # Create a placeholder for the video frame
+                    frame_placeholder = st.empty()
+                    
+                    # Basic streaming loop
+                    while True:
+                        try:
+                            # Read raw data (this is a simplified version)
+                            data = video.read(614400)  # 640x480 YUYV
+                            if data:
+                                # Convert to base64 for display
+                                b64_frame = base64.b64encode(data).decode()
+                                frame_placeholder.image(
+                                    f"data:image/jpeg;base64,{b64_frame}",
+                                    use_column_width=True
+                                )
+                            time.sleep(0.1)  # Limit frame rate
+                        except Exception as e:
+                            st.error(f"Streaming error: {str(e)}")
+                            break
+            except Exception as e:
+                st.error(f"Failed to open video device: {str(e)}")
 
 if __name__ == "__main__":
     main()
