@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import plotly.express as px
 import json
@@ -11,6 +11,7 @@ from queue import Queue
 import asyncio
 from collections import defaultdict
 import os
+import hashlib
 
 # Enhanced database setup
 def init_db():
@@ -142,31 +143,43 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
+def get_cookie_hash():
+    """Generate hash for cookie validation"""
+    secret = os.environ.get("GUI_PW", "")
+    return hashlib.sha256(f"{secret}:temcontrol".encode()).hexdigest()
+
 def check_password():
-    """Returns `True` if the user had the correct password."""
+    """Returns `True` if the user had the correct password or valid cookie."""
+    
+    # Check for valid cookie first
+    cookie_name = "temcontrol_auth"
+    cookie_value = st.cookies.get(cookie_name)
+    if cookie_value is not None and cookie_value == get_cookie_hash():
+        return True
+    
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         if "password" in st.session_state and st.session_state["password"] == os.environ.get("GUI_PW"):
             st.session_state["password_correct"] = True
+            # Set cookie that expires in 7 days
+            expires = datetime.now() + timedelta(days=7)
+            st.cookies.set(cookie_name, get_cookie_hash(), expires=expires)
             del st.session_state["password"]  # Delete password from session state
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         return False
     elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
     else:
-        # Password correct
         return True
 
 # Streamlit interface
