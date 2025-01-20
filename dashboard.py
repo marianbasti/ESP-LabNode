@@ -273,19 +273,23 @@ class VideoStream:
         except Exception as e:
             logger.error(f"Video stream error: {str(e)}")
 
-def show_camera_grid():
-    st.header("Available Cameras")
-    
+def show_camera_page():
+    st.title("Camera Monitoring")
     cameras = get_available_video_devices()
     if not cameras:
         st.warning("No cameras detected")
         return
 
-    # Create a grid layout
-    cols_per_row = 2
+    # Camera grid settings
+    cols_per_row = st.sidebar.select_slider(
+        "Cameras per row", 
+        options=[1, 2, 3, 4], 
+        value=2
+    )
+    
     rows = (len(cameras) + cols_per_row - 1) // cols_per_row
-
     streams = {}
+
     try:
         for row in range(rows):
             cols = st.columns(cols_per_row)
@@ -301,20 +305,92 @@ def show_camera_grid():
                         if stream_key not in streams:
                             streams[stream_key] = VideoStream(camera['path'])
                         
-                        if st.button("Toggle Stream", key=f"btn_{camera['path']}"):
-                            if not streams[stream_key].is_running:
-                                streams[stream_key].start()
-                                thread = threading.Thread(
-                                    target=streams[stream_key].read_frames,
-                                    args=(placeholder,)
-                                )
-                                thread.start()
-                            else:
-                                streams[stream_key].stop()
+                        col1, col2 = st.columns([3, 1])
+                        with col2:
+                            if st.button("Toggle", key=f"btn_{camera['path']}"):
+                                if not streams[stream_key].is_running:
+                                    streams[stream_key].start()
+                                    thread = threading.Thread(
+                                        target=streams[stream_key].read_frames,
+                                        args=(placeholder,)
+                                    )
+                                    thread.start()
+                                else:
+                                    streams[stream_key].stop()
 
     except Exception as e:
-        logger.error(f"Error in camera grid: {str(e)}")
-        st.error("Error displaying camera grid")
+        logger.error(f"Error in camera page: {str(e)}")
+        st.error("Error displaying cameras")
+
+def show_dashboard_page(selected_device):
+    st.title(f"Temperature Control Dashboard - {selected_device.name}")
+    # Create columns for layout
+    col1, col2 = st.columns(2)
+    
+    # Current readings
+    with col1:
+        st.subheader("Current Readings")
+        data = get_sensor_data(selected_device.url)
+        if data and 'error' not in data:
+            logger.info(f"Retrieved sensor data for {selected_device.name}: temp={data['temperature']}°C, humidity={data['humidity']}%")
+            st.metric("Temperature", f"{data['temperature']}°C")
+            st.metric("Humidity", f"{data['humidity']}%")
+            store_reading(selected_device.id, data['temperature'], data['humidity'])
+        else:
+            logger.error(f"Failed to fetch readings for {selected_device.name}")
+            st.error("Failed to fetch current readings")
+    
+    # Manual control
+    with col2:
+        st.subheader("Manual Control")
+        col3, col4 = st.columns(2)
+        with col3:
+            if st.button("Turn ON"):
+                set_relay_state(selected_device.url, "on")
+        with col4:
+            if st.button("Turn OFF"):
+                set_relay_state(selected_device.url, "off")
+    
+    # Timer configuration
+    st.subheader("Timer Configuration")
+    timer_data = get_timer_config(selected_device.url)
+    if timer_data:
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            timer_enabled = st.checkbox("Enable Timer", 
+                                      value=timer_data.get('enabled', False))
+        with col6:
+            on_duration = st.number_input("ON Duration (seconds)", 
+                                        value=timer_data.get('onDuration', 0))
+        with col7:
+            off_duration = st.number_input("OFF Duration (seconds)", 
+                                         value=timer_data.get('offDuration', 0))
+        
+        if st.button("Update Timer"):
+            timer_config = {
+                "enabled": timer_enabled,
+                "onDuration": on_duration,
+                "offDuration": off_duration
+            }
+            result = set_timer_config(selected_device.url, timer_config)
+            if result:
+                st.success("Timer updated successfully")
+
+    # Historical data visualization
+    st.subheader("Historical Data")
+    hours = st.slider("Time Window (hours)", 1, 72, 24)
+    df = get_historical_data(selected_device.id, hours)
+    
+    if not df.empty:
+        fig1 = px.line(df, x='timestamp', y='temperature', 
+                       title='Temperature History')
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        fig2 = px.line(df, x='timestamp', y='humidity', 
+                       title='Humidity History')
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("No historical data available")
 
 # Initialize database and collector outside of main()
 init_db()
@@ -372,134 +448,66 @@ def main():
             return
             
         if not check_password():
-            st.stop()  # Do not continue if password is incorrect
-        
+            st.stop()
+
         # Add logout button in sidebar
         if st.sidebar.button("Logout"):
             controller = CookieController()
             controller.remove('auth_token')
             st.rerun()
-        
-        # Initialize database
-        init_db()
-        
-        # Sidebar device management
-        st.sidebar.title("Device Management")
-        
-        # Add new device
-        with st.sidebar.expander("Add New Device"):
-            new_name = st.text_input("Device Name")
-            new_url = st.text_input("Device URL", "http://")
-            if st.button("Add Device"):
-                if add_device(new_name, new_url):
-                    st.success(f"Added device: {new_name}")
-                else:
-                    st.error("Failed to add device. Name must be unique.")
-        
-        # Device selection
-        devices = get_devices()
-        if len(devices) == 0:
-            st.sidebar.warning("No devices configured")
-            return
+
+        # Page selection
+        st.sidebar.title("Navigation")
+        page = st.sidebar.radio("Select Page", ["Dashboard", "Cameras"])
+
+        if page == "Cameras":
+            show_camera_page()
+        else:  # Dashboard
+            # Sidebar device management
+            st.sidebar.title("Device Management")
             
-        selected_device = st.sidebar.selectbox(
-            "Select Device",
-            devices.itertuples(),
-            format_func=lambda x: x.name
-        )
-        
-        # Remove device button
-        if st.sidebar.button("Remove Selected Device"):
-            remove_device(selected_device.id)
-            st.rerun()
-        
-        # Main content
-        st.title(f"Temperature Control Dashboard - {selected_device.name}")
-        
-        # Create columns for layout
-        col1, col2 = st.columns(2)
-        
-        # Current readings
-        with col1:
-            st.subheader("Current Readings")
-            data = get_sensor_data(selected_device.url)
-            if data and 'error' not in data:
-                logger.info(f"Retrieved sensor data for {selected_device.name}: temp={data['temperature']}°C, humidity={data['humidity']}%")
-                st.metric("Temperature", f"{data['temperature']}°C")
-                st.metric("Humidity", f"{data['humidity']}%")
-                store_reading(selected_device.id, data['temperature'], data['humidity'])
-            else:
-                logger.error(f"Failed to fetch readings for {selected_device.name}")
-                st.error("Failed to fetch current readings")
-        
-        # Manual control
-        with col2:
-            st.subheader("Manual Control")
-            col3, col4 = st.columns(2)
-            with col3:
-                if st.button("Turn ON"):
-                    set_relay_state(selected_device.url, "on")
-            with col4:
-                if st.button("Turn OFF"):
-                    set_relay_state(selected_device.url, "off")
-        
-        # Timer configuration
-        st.subheader("Timer Configuration")
-        timer_data = get_timer_config(selected_device.url)
-        if timer_data:
-            col5, col6, col7 = st.columns(3)
-            with col5:
-                timer_enabled = st.checkbox("Enable Timer", 
-                                          value=timer_data.get('enabled', False))
-            with col6:
-                on_duration = st.number_input("ON Duration (seconds)", 
-                                            value=timer_data.get('onDuration', 0))
-            with col7:
-                off_duration = st.number_input("OFF Duration (seconds)", 
-                                             value=timer_data.get('offDuration', 0))
+            # Add new device
+            with st.sidebar.expander("Add New Device"):
+                new_name = st.text_input("Device Name")
+                new_url = st.text_input("Device URL", "http://")
+                if st.button("Add Device"):
+                    if add_device(new_name, new_url):
+                        st.success(f"Added device: {new_name}")
+                    else:
+                        st.error("Failed to add device. Name must be unique.")
             
-            if st.button("Update Timer"):
-                timer_config = {
-                    "enabled": timer_enabled,
-                    "onDuration": on_duration,
-                    "offDuration": off_duration
-                }
-                result = set_timer_config(selected_device.url, timer_config)
-                if result:
-                    st.success("Timer updated successfully")
-        
-        # Add reading frequency control
-        with st.sidebar.expander("Device Settings"):
-            current_frequency = selected_device.reading_frequency
-            new_frequency = st.number_input(
-                "Reading Frequency (seconds)",
-                min_value=5,
-                value=current_frequency,
-                step=5
+            # Device selection
+            devices = get_devices()
+            if len(devices) == 0:
+                st.sidebar.warning("No devices configured")
+                return
+                
+            selected_device = st.sidebar.selectbox(
+                "Select Device",
+                devices.itertuples(),
+                format_func=lambda x: x.name
             )
-            if new_frequency != current_frequency:
-                update_device_frequency(selected_device.id, new_frequency)
-                st.success(f"Updated reading frequency to {new_frequency} seconds")
-
-        # Add Camera Grid view in sidebar
-        if st.sidebar.checkbox("Show Camera Grid"):
-            show_camera_grid()
-
-        # Historical data visualization
-        st.subheader("Historical Data")
-        hours = st.slider("Time Window (hours)", 1, 72, 24)
-        df = get_historical_data(selected_device.id, hours)
-        
-        if not df.empty:
-            fig1 = px.line(df, x='timestamp', y='temperature', 
-                           title='Temperature History')
-            st.plotly_chart(fig1, use_container_width=True)
             
-            fig2 = px.line(df, x='timestamp', y='humidity', 
-                           title='Humidity History')
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No historical data available")
+            # Remove device button
+            if st.sidebar.button("Remove Selected Device"):
+                remove_device(selected_device.id)
+                st.rerun()
+
+            # Device settings
+            with st.sidebar.expander("Device Settings"):
+                current_frequency = selected_device.reading_frequency
+                new_frequency = st.number_input(
+                    "Reading Frequency (seconds)",
+                    min_value=5,
+                    value=current_frequency,
+                    step=5
+                )
+                if new_frequency != current_frequency:
+                    update_device_frequency(selected_device.id, new_frequency)
+                    st.success(f"Updated reading frequency to {new_frequency} seconds")
+
+            # Show dashboard content
+            show_dashboard_page(selected_device)
 
     except Exception as e:
         logger.error(f"Unhandled exception in main: {str(e)}\n{traceback.format_exc()}")
