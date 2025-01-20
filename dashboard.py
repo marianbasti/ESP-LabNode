@@ -11,7 +11,6 @@ from queue import Queue
 import asyncio
 from collections import defaultdict
 import os
-import hashlib
 
 # Enhanced database setup
 def init_db():
@@ -143,39 +142,53 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
-def get_auth_hash():
-    """Generate hash for authentication"""
-    secret = os.environ.get("GUI_PW", "")
-    return hashlib.sha256(f"{secret}:temcontrol".encode()).hexdigest()
-
 def check_password():
     """Returns `True` if the user had the correct password or valid session."""
     
-    # Check if already authenticated in this session
-    if "authenticated" in st.session_state and st.session_state["authenticated"]:
+    # Check for existing valid session
+    if 'logged_in' in st.session_state:
         return True
-    
+
+    # Check for session cookie
+    if st.session_state.get('session_cookie'):
+        cookie = st.session_state.get('session_cookie')
+        if cookie == os.environ.get("GUI_PW"):  # Simple token validation
+            st.session_state['logged_in'] = True
+            return True
+
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         if "password" in st.session_state and st.session_state["password"] == os.environ.get("GUI_PW"):
-            st.session_state["authenticated"] = True
-            del st.session_state["password"]  # Delete password from session state
+            st.session_state["logged_in"] = True
+            # Set session cookie for 1 year
+            st.session_state['session_cookie'] = os.environ.get("GUI_PW")  # Simple token
+            st.experimental_set_query_params()  # Clear URL parameters
+            
+            # Create persistent cookie
+            st.experimental_set_cookie(
+                "session_token",
+                os.environ.get("GUI_PW"),
+                max_age=31536000,  # 1 year in seconds
+                key="session_cookie"
+            )
         else:
-            st.session_state["authenticated"] = False
+            st.session_state["password_correct"] = False
 
-    if "authenticated" not in st.session_state:
+    if "logged_in" not in st.session_state:
+        # First run, show input for password
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         return False
-    elif not st.session_state["authenticated"]:
+    elif not st.session_state.get("logged_in"):
+        # Password incorrect, show input + error
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
-    else:
-        return True
+    
+    return True
 
 # Streamlit interface
 def main():
