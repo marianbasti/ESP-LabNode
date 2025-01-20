@@ -202,74 +202,154 @@ def get_historical_data(device_id, hours=24):
         conn.close()
 
 def show_dashboard_page(selected_device):
-    st.title(f"Temperature Control Dashboard - {selected_device.name}")
-    # Create columns for layout
-    col1, col2 = st.columns(2)
+    # Create a container for better spacing
+    main_container = st.container()
     
-    # Current readings
-    with col1:
-        st.subheader("Current Readings")
-        data = get_sensor_data(selected_device.url)
+    with main_container:
+        # Header with device status
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.title(f"📊 {selected_device.name}")
+        with col2:
+            st.markdown(
+                f"""
+                <div style='background-color: #f0f2f6; padding: 1rem; border-radius: 0.5rem; text-align: center;'>
+                    <small>Device Status</small><br/>
+                    <span style='color: #00c853; font-size: 1.2em;'>●</span> Online
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        # Current readings in modern cards
+        st.markdown("### 📌 Current Status")
+        metric_cols = st.columns(2)
+        
+        with st.spinner('Fetching current readings...'):
+            data = get_sensor_data(selected_device.url)
+            
         if data and 'error' not in data:
-            logger.info(f"Retrieved sensor data for {selected_device.name}: temp={data['temperature']}°C, humidity={data['humidity']}%")
-            st.metric("Temperature", f"{data['temperature']}°C")
-            st.metric("Humidity", f"{data['humidity']}%")
+            with metric_cols[0]:
+                st.markdown(
+                    f"""
+                    <div style='background-color: #f0f2f6; padding: 1.5rem; border-radius: 0.5rem;'>
+                        <h3 style='margin:0'>🌡️ Temperature</h3>
+                        <h2 style='color: #1e88e5; margin:0'>{data['temperature']}°C</h2>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            with metric_cols[1]:
+                st.markdown(
+                    f"""
+                    <div style='background-color: #f0f2f6; padding: 1.5rem; border-radius: 0.5rem;'>
+                        <h3 style='margin:0'>💧 Humidity</h3>
+                        <h2 style='color: #1e88e5; margin:0'>{data['humidity']}%</h2>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
             store_reading(selected_device.id, data['temperature'], data['humidity'])
         else:
-            logger.error(f"Failed to fetch readings for {selected_device.name}")
-            st.error("Failed to fetch current readings")
-    
-    # Manual control
-    with col2:
-        st.subheader("Manual Control")
-        col3, col4 = st.columns(2)
-        with col3:
-            if st.button("Turn ON"):
-                set_relay_state(selected_device.url, "on")
-        with col4:
-            if st.button("Turn OFF"):
-                set_relay_state(selected_device.url, "off")
-    
-    # Timer configuration
-    st.subheader("Timer Configuration")
-    timer_data = get_timer_config(selected_device.url)
-    if timer_data:
-        col5, col6, col7 = st.columns(3)
-        with col5:
-            timer_enabled = st.checkbox("Enable Timer", 
-                                      value=timer_data.get('enabled', False))
-        with col6:
-            on_duration = st.number_input("ON Duration (seconds)", 
-                                        value=timer_data.get('onDuration', 0))
-        with col7:
-            off_duration = st.number_input("OFF Duration (seconds)", 
-                                         value=timer_data.get('offDuration', 0))
-        
-        if st.button("Update Timer"):
-            timer_config = {
-                "enabled": timer_enabled,
-                "onDuration": on_duration,
-                "offDuration": off_duration
-            }
-            result = set_timer_config(selected_device.url, timer_config)
-            if result:
-                st.success("Timer updated successfully")
+            st.error("📡 Unable to fetch current readings. Please check device connection.")
 
-    # Historical data visualization
-    st.subheader("Historical Data")
-    hours = st.slider("Time Window (hours)", 1, 72, 24)
-    df = get_historical_data(selected_device.id, hours)
-    
-    if not df.empty:
-        fig1 = px.line(df, x='timestamp', y='temperature', 
-                       title='Temperature History')
-        st.plotly_chart(fig1, use_container_width=True)
+        # Control panel
+        st.markdown("### 🎮 Control Panel")
+        control_cols = st.columns([2, 3])
         
-        fig2 = px.line(df, x='timestamp', y='humidity', 
-                       title='Humidity History')
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.info("No historical data available")
+        with control_cols[0]:
+            st.markdown("#### Manual Control")
+            control_cols_inner = st.columns(2)
+            with control_cols_inner[0]:
+                if st.button("🟢 Turn ON", use_container_width=True):
+                    with st.spinner('Updating...'):
+                        if set_relay_state(selected_device.url, "on"):
+                            st.success("Device turned ON")
+                        else:
+                            st.error("Failed to turn device ON")
+            with control_cols_inner[1]:
+                if st.button("🔴 Turn OFF", use_container_width=True):
+                    with st.spinner('Updating...'):
+                        if set_relay_state(selected_device.url, "off"):
+                            st.success("Device turned OFF")
+                        else:
+                            st.error("Failed to turn device OFF")
+
+        with control_cols[1]:
+            st.markdown("#### Timer Settings")
+            timer_data = get_timer_config(selected_device.url)
+            if timer_data:
+                timer_cols = st.columns([1, 2, 2])
+                with timer_cols[0]:
+                    timer_enabled = st.toggle("Active", value=timer_data.get('enabled', False))
+                with timer_cols[1]:
+                    on_duration = st.number_input("ON (seconds)", 
+                                                value=timer_data.get('onDuration', 0),
+                                                min_value=0,
+                                                step=5)
+                with timer_cols[2]:
+                    off_duration = st.number_input("OFF (seconds)", 
+                                                 value=timer_data.get('offDuration', 0),
+                                                 min_value=0,
+                                                 step=5)
+
+                if st.button("💾 Save Timer Settings", use_container_width=True):
+                    with st.spinner('Updating timer configuration...'):
+                        timer_config = {
+                            "enabled": timer_enabled,
+                            "onDuration": on_duration,
+                            "offDuration": off_duration
+                        }
+                        if set_timer_config(selected_device.url, timer_config):
+                            st.success("Timer updated successfully")
+                        else:
+                            st.error("Failed to update timer")
+
+        # Historical data with improved visuals
+        st.markdown("### 📈 Historical Data")
+        
+        time_options = {
+            "Last 6 hours": 6,
+            "Last 12 hours": 12,
+            "Last 24 hours": 24,
+            "Last 48 hours": 48,
+            "Last 72 hours": 72
+        }
+        selected_time = st.select_slider(
+            "Time Range",
+            options=list(time_options.keys()),
+            value="Last 24 hours"
+        )
+        
+        with st.spinner('Loading historical data...'):
+            df = get_historical_data(selected_device.id, time_options[selected_time])
+            
+            if not df.empty:
+                # Temperature chart
+                fig1 = px.line(df, x='timestamp', y='temperature',
+                              title='Temperature History')
+                fig1.update_traces(line_color='#1e88e5')
+                fig1.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    xaxis_gridcolor='#f0f2f6',
+                    yaxis_gridcolor='#f0f2f6'
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+                
+                # Humidity chart
+                fig2 = px.line(df, x='timestamp', y='humidity',
+                              title='Humidity History')
+                fig2.update_traces(line_color='#43a047')
+                fig2.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    xaxis_gridcolor='#f0f2f6',
+                    yaxis_gridcolor='#f0f2f6'
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("📊 No historical data available for the selected time range")
 
 # Initialize database and collector outside of main()
 init_db()
