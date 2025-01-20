@@ -132,69 +132,12 @@ def get_historical_data(device_id, hours=24):
     conn.close()
     return df
 
-# Background collection system
-class DataCollector:
-    def __init__(self):
-        self.collectors = {}
-        self.stop_flags = defaultdict(threading.Event)
-
-    def collect_device_data(self, device_id, device_url, frequency):
-        while not self.stop_flags[device_id].is_set():
-            try:
-                data = get_sensor_data(device_url)
-                if data and 'error' not in data:
-                    store_reading(device_id, data['temperature'], data['humidity'])
-            except Exception as e:
-                print(f"Error collecting data for device {device_id}: {e}")
-            time.sleep(frequency)
-
-    def start_collector(self, device_id, device_url, frequency):
-        if device_id in self.collectors:
-            self.stop_collector(device_id)
-        
-        self.stop_flags[device_id].clear()
-        collector = threading.Thread(
-            target=self.collect_device_data,
-            args=(device_id, device_url, frequency)
-        )
-        collector.daemon = True
-        collector.start()
-        self.collectors[device_id] = collector
-
-    def stop_collector(self, device_id):
-        if device_id in self.collectors:
-            self.stop_flags[device_id].set()
-            self.collectors[device_id].join(timeout=1)
-            del self.collectors[device_id]
-            del self.stop_flags[device_id]
-
-    def start_all_devices(self):
-        """Start collectors for all devices in the database"""
-        conn = sqlite3.connect('sensor_data.db')
-        df = pd.read_sql_query("SELECT * FROM devices", conn)
-        conn.close()
-
-        for device in df.itertuples():
-            if device.id not in self.collectors:
-                self.start_collector(device.id, device.url, device.reading_frequency)
-
-    def stop_all_devices(self):
-        """Stop all running collectors"""
-        device_ids = list(self.collectors.keys())
-        for device_id in device_ids:
-            self.stop_collector(device_id)
-
 # Initialize database and collector outside of main()
 init_db()
-if 'collector' not in st.session_state:
-    st.session_state.collector = DataCollector()
-    # Start collecting data for all devices automatically
-    st.session_state.collector.start_all_devices()
 
 # Register a cleanup handler
 def cleanup():
-    if 'collector' in st.session_state:
-        st.session_state.collector.stop_all_devices()
+    pass
 import atexit
 atexit.register(cleanup)
 
@@ -300,21 +243,6 @@ def main():
         if new_frequency != current_frequency:
             update_device_frequency(selected_device.id, new_frequency)
             st.success(f"Updated reading frequency to {new_frequency} seconds")
-
-        # Add collector controls
-        collector_running = selected_device.id in st.session_state.collector.collectors
-        if collector_running:
-            if st.button("Stop Automatic Collection"):
-                st.session_state.collector.stop_collector(selected_device.id)
-                st.rerun()
-        else:
-            if st.button("Start Automatic Collection"):
-                st.session_state.collector.start_collector(
-                    selected_device.id,
-                    selected_device.url,
-                    new_frequency
-                )
-                st.rerun()
 
     # Historical data visualization
     st.subheader("Historical Data")
