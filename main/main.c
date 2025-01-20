@@ -350,19 +350,55 @@ static esp_err_t sensor_get_handler(httpd_req_t *req) {
 
 static esp_err_t relay_post_handler(httpd_req_t *req) {
     char buf[100];
-    int ret = httpd_req_recv(req, buf, sizeof(buf));
-    if (ret <= 0) return ESP_FAIL;
+    char response[100];
+    bool success = false;
+    
+    // Get content length
+    size_t recv_size = req->content_len;
+    if (recv_size >= sizeof(buf)) {
+        // Response for too large payload
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
+        return ESP_FAIL;
+    }
+    
+    // Read payload
+    int ret = httpd_req_recv(req, buf, recv_size);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
     
     buf[ret] = '\0';
+    
+    // Parse and set relay state
     if (strstr(buf, "\"state\":\"on\"")) {
         relay_timer.enabled = false;
         gpio_set_level(RELAY_GPIO, 1);
+        success = true;
     } else if (strstr(buf, "\"state\":\"off\"")) {
         relay_timer.enabled = false;
         gpio_set_level(RELAY_GPIO, 0);
+        success = true;
     }
 
-    httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    // Set response headers
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Connection", "close");
+
+    // Send appropriate response
+    if (success) {
+        create_json_response(response, sizeof(response),
+            "{\"status\":\"ok\",\"state\":\"%s\"}", 
+            gpio_get_level(RELAY_GPIO) ? "on" : "off");
+    } else {
+        create_json_response(response, sizeof(response),
+            "{\"status\":\"error\",\"message\":\"Invalid request\"}");
+    }
+    
+    httpd_resp_sendstr(req, response);
     return ESP_OK;
 }
 

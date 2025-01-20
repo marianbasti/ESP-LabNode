@@ -62,9 +62,17 @@ def init_db():
 # Enhanced API interaction functions
 def get_sensor_data(base_url):
     try:
-        response = requests.get(f"{base_url}/api/sensor")
+        headers = {'Connection': 'close'}
+        response = requests.get(
+            f"{base_url}/api/sensor",
+            headers=headers,
+            timeout=5.0
+        )
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout getting sensor data from {base_url}")
+        return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to get sensor data from {base_url}: {str(e)}")
         return None
@@ -74,12 +82,25 @@ def get_sensor_data(base_url):
 
 def set_relay_state(base_url, state):
     try:
-        response = requests.post(f"{base_url}/api/relay", params={"state": state})
+        # Add timeout and headers
+        headers = {'Connection': 'close'}
+        response = requests.post(
+            f"{base_url}/api/relay", 
+            params={"state": state},
+            headers=headers,
+            timeout=5.0
+        )
         response.raise_for_status()
         logger.info(f"Relay state set to {state} for {base_url}")
         return response.json()
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout setting relay state for {base_url}")
+        return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to set relay state for {base_url}: {str(e)}")
+        return None
+    except ValueError as e:
+        logger.error(f"Invalid JSON response from {base_url}: {str(e)}")
         return None
 
 def get_timer_config(base_url):
