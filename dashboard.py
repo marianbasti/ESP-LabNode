@@ -12,23 +12,8 @@ import asyncio
 from collections import defaultdict
 import os
 from streamlit_cookies_controller import CookieController
-import fcntl
-import mmap
-import select
-import struct
-import array
-import base64
 import logging
 import traceback
-
-# V4L2 constants
-VIDIOC_QUERYCAP = 0x80685600
-VIDIOC_ENUM_FMT = 0xc0405602
-V4L2_PIX_FMT_MJPEG = 0x47504A4D
-V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
-VIDIOC_S_FMT = 0x5605
-VIDIOC_G_FMT = 0x80685604
-V4L2_PIX_FMT_YUYV = 0x56595559
 
 # Configure logging
 logging.basicConfig(
@@ -216,150 +201,6 @@ def get_historical_data(device_id, hours=24):
     finally:
         conn.close()
 
-def get_available_video_devices():
-    video_devices = []
-    try:
-        for i in range(64):
-            try:
-                device_path = f'/dev/video{i}'
-                with open(device_path, 'rb') as f:
-                    cap = array.array('B', [0] * 104)
-                    try:
-                        fcntl.ioctl(f, VIDIOC_QUERYCAP, cap)
-                        device_name = cap[8:40].tobytes().decode().rstrip('\0')
-                        video_devices.append({
-                            'path': device_path,
-                            'name': device_name
-                        })
-                        logger.debug(f"Found video device: {device_path} ({device_name})")
-                    except Exception as e:
-                        logger.debug(f"Failed to query video device {device_path}: {str(e)}")
-                        continue
-            except Exception as e:
-                logger.debug(f"Cannot access video device {i}: {str(e)}")
-                continue
-        return video_devices
-    except Exception as e:
-        logger.error(f"Error enumerating video devices: {str(e)}\n{traceback.format_exc()}")
-        return []
-
-class VideoStream:
-    def __init__(self, device_path):
-        self.device_path = device_path
-        self.is_running = False
-        self._stop_event = threading.Event()
-        self.width = 640
-        self.height = 480
-
-    def start(self):
-        self.is_running = True
-        self._stop_event.clear()
-
-    def stop(self):
-        self.is_running = False
-        self._stop_event.set()
-
-    def _set_video_format(self, video_fd):
-        # Format struct: type, width, height, pixelformat, field, ...
-        format_struct = struct.pack('LLLLLL', V4L2_BUF_TYPE_VIDEO_CAPTURE,
-                                  self.width, self.height, V4L2_PIX_FMT_YUYV,
-                                  0, 0)
-        try:
-            fcntl.ioctl(video_fd, VIDIOC_S_FMT, format_struct)
-        except Exception as e:
-            logger.error(f"Failed to set video format: {str(e)}")
-            return False
-        return True
-
-    def read_frames(self, placeholder):
-        try:
-            with open(self.device_path, 'rb') as video:
-                if not self._set_video_format(video.fileno()):
-                    return
-
-                frame_size = self.width * self.height * 2  # YUYV = 2 bytes per pixel
-                while not self._stop_event.is_set():
-                    try:
-                        frame = video.read(frame_size)
-                        if not frame:
-                            break
-
-                        # Convert YUYV to JPEG (basic conversion, just for display)
-                        # In a production environment, you might want to use a proper
-                        # conversion library like OpenCV
-                        grey_frame = bytearray()
-                        for i in range(0, len(frame), 4):
-                            y1 = frame[i]
-                            grey_frame.extend([y1, y1, y1])
-                        
-                        b64_frame = base64.b64encode(bytes(grey_frame)).decode()
-                        placeholder.image(
-                            f"data:image/jpeg;base64,{b64_frame}",
-                            use_column_width=True,
-                            channels="RGB"
-                        )
-                        time.sleep(0.1)
-                    except IOError as e:
-                        if e.errno == 11:  # Resource temporarily unavailable
-                            time.sleep(0.1)
-                            continue
-                        logger.error(f"Frame reading error: {str(e)}")
-                        break
-                    except Exception as e:
-                        logger.error(f"Frame reading error: {str(e)}")
-                        break
-        except Exception as e:
-            logger.error(f"Video stream error: {str(e)}")
-
-def show_camera_page():
-    st.title("Camera Monitoring")
-    cameras = get_available_video_devices()
-    if not cameras:
-        st.warning("No cameras detected")
-        return
-
-    # Camera grid settings
-    cols_per_row = st.sidebar.select_slider(
-        "Cameras per row", 
-        options=[1, 2, 3, 4], 
-        value=2
-    )
-    
-    rows = (len(cameras) + cols_per_row - 1) // cols_per_row
-    streams = {}
-
-    try:
-        for row in range(rows):
-            cols = st.columns(cols_per_row)
-            for col_idx in range(cols_per_row):
-                camera_idx = row * cols_per_row + col_idx
-                if camera_idx < len(cameras):
-                    camera = cameras[camera_idx]
-                    with cols[col_idx]:
-                        st.subheader(f"{camera['name']}")
-                        placeholder = st.empty()
-                        
-                        stream_key = f"stream_{camera['path']}"
-                        if stream_key not in streams:
-                            streams[stream_key] = VideoStream(camera['path'])
-                        
-                        col1, col2 = st.columns([3, 1])
-                        with col2:
-                            if st.button("Toggle", key=f"btn_{camera['path']}"):
-                                if not streams[stream_key].is_running:
-                                    streams[stream_key].start()
-                                    thread = threading.Thread(
-                                        target=streams[stream_key].read_frames,
-                                        args=(placeholder,)
-                                    )
-                                    thread.start()
-                                else:
-                                    streams[stream_key].stop()
-
-    except Exception as e:
-        logger.error(f"Error in camera page: {str(e)}")
-        st.error("Error displaying cameras")
-
 def show_dashboard_page(selected_device):
     st.title(f"Temperature Control Dashboard - {selected_device.name}")
     # Create columns for layout
@@ -494,58 +335,51 @@ def main():
             controller.remove('auth_token')
             st.rerun()
 
-        # Page selection
-        st.sidebar.title("Navigation")
-        page = st.sidebar.radio("Select Page", ["Dashboard", "Cameras"])
+        # Sidebar device management
+        st.sidebar.title("Device Management")
+        
+        # Add new device
+        with st.sidebar.expander("Add New Device"):
+            new_name = st.text_input("Device Name")
+            new_url = st.text_input("Device URL", "http://")
+            if st.button("Add Device"):
+                if add_device(new_name, new_url):
+                    st.success(f"Added device: {new_name}")
+                else:
+                    st.error("Failed to add device. Name must be unique.")
+        
+        # Device selection
+        devices = get_devices()
+        if len(devices) == 0:
+            st.sidebar.warning("No devices configured")
+            return
+            
+        selected_device = st.sidebar.selectbox(
+            "Select Device",
+            devices.itertuples(),
+            format_func=lambda x: x.name
+        )
+        
+        # Remove device button
+        if st.sidebar.button("Remove Selected Device"):
+            remove_device(selected_device.id)
+            st.rerun()
 
-        if page == "Cameras":
-            show_camera_page()
-        else:  # Dashboard
-            # Sidebar device management
-            st.sidebar.title("Device Management")
-            
-            # Add new device
-            with st.sidebar.expander("Add New Device"):
-                new_name = st.text_input("Device Name")
-                new_url = st.text_input("Device URL", "http://")
-                if st.button("Add Device"):
-                    if add_device(new_name, new_url):
-                        st.success(f"Added device: {new_name}")
-                    else:
-                        st.error("Failed to add device. Name must be unique.")
-            
-            # Device selection
-            devices = get_devices()
-            if len(devices) == 0:
-                st.sidebar.warning("No devices configured")
-                return
-                
-            selected_device = st.sidebar.selectbox(
-                "Select Device",
-                devices.itertuples(),
-                format_func=lambda x: x.name
+        # Device settings
+        with st.sidebar.expander("Device Settings"):
+            current_frequency = selected_device.reading_frequency
+            new_frequency = st.number_input(
+                "Reading Frequency (seconds)",
+                min_value=5,
+                value=current_frequency,
+                step=5
             )
-            
-            # Remove device button
-            if st.sidebar.button("Remove Selected Device"):
-                remove_device(selected_device.id)
-                st.rerun()
+            if new_frequency != current_frequency:
+                update_device_frequency(selected_device.id, new_frequency)
+                st.success(f"Updated reading frequency to {new_frequency} seconds")
 
-            # Device settings
-            with st.sidebar.expander("Device Settings"):
-                current_frequency = selected_device.reading_frequency
-                new_frequency = st.number_input(
-                    "Reading Frequency (seconds)",
-                    min_value=5,
-                    value=current_frequency,
-                    step=5
-                )
-                if new_frequency != current_frequency:
-                    update_device_frequency(selected_device.id, new_frequency)
-                    st.success(f"Updated reading frequency to {new_frequency} seconds")
-
-            # Show dashboard content
-            show_dashboard_page(selected_device)
+        # Show dashboard content
+        show_dashboard_page(selected_device)
 
     except Exception as e:
         logger.error(f"Unhandled exception in main: {str(e)}\n{traceback.format_exc()}")
