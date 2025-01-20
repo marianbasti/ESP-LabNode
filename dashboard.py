@@ -55,12 +55,6 @@ def init_db():
                       temperature REAL,
                       humidity REAL,
                       FOREIGN KEY(device_id) REFERENCES devices(id))''')
-        c.execute('''CREATE TABLE IF NOT EXISTS video_devices
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      device_path TEXT UNIQUE,
-                      device_name TEXT,
-                      device_id INTEGER,
-                      FOREIGN KEY(device_id) REFERENCES devices(id))''')
         conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -246,47 +240,81 @@ def get_available_video_devices():
         logger.error(f"Error enumerating video devices: {str(e)}\n{traceback.format_exc()}")
         return []
 
-def add_video_device(device_path, device_name, device_id):
-    conn = sqlite3.connect('sensor_data.db')
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO video_devices (device_path, device_name, device_id) VALUES (?, ?, ?)",
-                 (device_path, device_name, device_id))
-        conn.commit()
-        logger.info(f"Added video device: {device_name} ({device_path}) for device ID {device_id}")
-        return True
-    except sqlite3.IntegrityError as e:
-        logger.warning(f"Failed to add video device - duplicate path: {device_path}")
-        return False
-    except Exception as e:
-        logger.error(f"Error adding video device {device_name} ({device_path}): {str(e)}\n{traceback.format_exc()}")
-        return False
-    finally:
-        conn.close()
+class VideoStream:
+    def __init__(self, device_path):
+        self.device_path = device_path
+        self.is_running = False
+        self._stop_event = threading.Event()
 
-def get_device_video_sources(device_id):
-    conn = sqlite3.connect('sensor_data.db')
-    try:
-        df = pd.read_sql_query("SELECT * FROM video_devices WHERE device_id = ?", 
-                              conn, params=(device_id,))
-        return df
-    except Exception as e:
-        logger.error(f"Error fetching video sources for device ID {device_id}: {str(e)}\n{traceback.format_exc()}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    def start(self):
+        self.is_running = True
+        self._stop_event.clear()
 
-def remove_video_device(video_id):
-    conn = sqlite3.connect('sensor_data.db')
-    c = conn.cursor()
+    def stop(self):
+        self.is_running = False
+        self._stop_event.set()
+
+    def read_frames(self, placeholder):
+        try:
+            with open(self.device_path, 'rb') as video:
+                while not self._stop_event.is_set():
+                    try:
+                        data = video.read(614400)  # 640x480 YUYV
+                        if data:
+                            b64_frame = base64.b64encode(data).decode()
+                            placeholder.image(
+                                f"data:image/jpeg;base64,{b64_frame}",
+                                use_column_width=True
+                            )
+                        time.sleep(0.1)
+                    except Exception as e:
+                        logger.error(f"Frame reading error: {str(e)}")
+                        break
+        except Exception as e:
+            logger.error(f"Video stream error: {str(e)}")
+
+def show_camera_grid():
+    st.header("Available Cameras")
+    
+    cameras = get_available_video_devices()
+    if not cameras:
+        st.warning("No cameras detected")
+        return
+
+    # Create a grid layout
+    cols_per_row = 2
+    rows = (len(cameras) + cols_per_row - 1) // cols_per_row
+
+    streams = {}
     try:
-        c.execute("DELETE FROM video_devices WHERE id = ?", (video_id,))
-        conn.commit()
-        logger.info(f"Removed video device with ID: {video_id}")
+        for row in range(rows):
+            cols = st.columns(cols_per_row)
+            for col_idx in range(cols_per_row):
+                camera_idx = row * cols_per_row + col_idx
+                if camera_idx < len(cameras):
+                    camera = cameras[camera_idx]
+                    with cols[col_idx]:
+                        st.subheader(f"{camera['name']}")
+                        placeholder = st.empty()
+                        
+                        stream_key = f"stream_{camera['path']}"
+                        if stream_key not in streams:
+                            streams[stream_key] = VideoStream(camera['path'])
+                        
+                        if st.button("Toggle Stream", key=f"btn_{camera['path']}"):
+                            if not streams[stream_key].is_running:
+                                streams[stream_key].start()
+                                thread = threading.Thread(
+                                    target=streams[stream_key].read_frames,
+                                    args=(placeholder,)
+                                )
+                                thread.start()
+                            else:
+                                streams[stream_key].stop()
+
     except Exception as e:
-        logger.error(f"Error removing video device {video_id}: {str(e)}\n{traceback.format_exc()}")
-    finally:
-        conn.close()
+        logger.error(f"Error in camera grid: {str(e)}")
+        st.error("Error displaying camera grid")
 
 # Initialize database and collector outside of main()
 init_db()
@@ -453,34 +481,9 @@ def main():
                 update_device_frequency(selected_device.id, new_frequency)
                 st.success(f"Updated reading frequency to {new_frequency} seconds")
 
-        # Video device management
-        with st.sidebar.expander("Video Devices"):
-            available_cameras = get_available_video_devices()
-            if available_cameras:
-                st.write("Available cameras:")
-                selected_camera = st.selectbox(
-                    "Select camera",
-                    options=available_cameras,
-                    format_func=lambda x: f"{x['name']} ({x['path']})"
-                )
-                if st.button("Add Camera"):
-                    if add_video_device(selected_camera['path'], 
-                                      selected_camera['name'],
-                                      selected_device.id):
-                        st.success("Camera added successfully")
-                    else:
-                        st.error("Failed to add camera")
-            
-            st.write("Connected cameras:")
-            video_sources = get_device_video_sources(selected_device.id)
-            for _, video in video_sources.iterrows():
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"{video['device_name']} ({video['device_path']})")
-                with col2:
-                    if st.button("Remove", key=f"remove_video_{video['id']}"):
-                        remove_video_device(video['id'])
-                        st.rerun()
+        # Add Camera Grid view in sidebar
+        if st.sidebar.checkbox("Show Camera Grid"):
+            show_camera_grid()
 
         # Historical data visualization
         st.subheader("Historical Data")
@@ -498,160 +501,9 @@ def main():
         else:
             st.info("No historical data available")
 
-        # Add video feed display after the timer configuration
-        video_sources = get_device_video_sources(selected_device.id)
-        if not video_sources.empty:
-            st.subheader("Video Feed")
-            selected_video = st.selectbox(
-                "Select video source",
-                video_sources.itertuples(),
-                format_func=lambda x: x.device_name
-            )
-            
-            if st.button("Start Stream"):
-                try:
-                    with open(selected_video.device_path, 'rb') as video:
-                        # Create a placeholder for the video frame
-                        frame_placeholder = st.empty()
-                        
-                        # Basic streaming loop
-                        while True:
-                            try:
-                                # Read raw data (this is a simplified version)
-                                data = video.read(614400)  # 640x480 YUYV
-                                if data:
-                                    # Convert to base64 for display
-                                    b64_frame = base64.b64encode(data).decode()
-                                    frame_placeholder.image(
-                                        f"data:image/jpeg;base64,{b64_frame}",
-                                        use_column_width=True
-                                    )
-                                time.sleep(0.1)  # Limit frame rate
-                            except Exception as e:
-                                st.error(f"Streaming error: {str(e)}")
-                                break
-                except Exception as e:
-                    st.error(f"Failed to open video device: {str(e)}")
     except Exception as e:
         logger.error(f"Unhandled exception in main: {str(e)}\n{traceback.format_exc()}")
         st.error("An unexpected error occurred. Please check the logs for details.")
 
 if __name__ == "__main__":
     main()
-
-class VideoStream:
-    def __init__(self, device_path):
-        self.device_path = device_path
-        self.running = False
-        self._video_fd = None
-
-    def __enter__(self):
-        self.open()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def open(self):
-        try:
-            self._video_fd = os.open(self.device_path, os.O_RDWR)
-            # Set video format to MJPEG
-            fmt = struct.pack('LLLLLL', V4L2_PIX_FMT_MJPEG, V4L2_BUF_TYPE_VIDEO_CAPTURE, 640, 480, 0, 0)
-            fcntl.ioctl(self._video_fd, VIDIOC_ENUM_FMT, fmt)
-            logger.info(f"Successfully opened video device: {self.device_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to open video device {self.device_path}: {str(e)}")
-            self.close()
-            return False
-
-    def close(self):
-        if self._video_fd is not None:
-            try:
-                os.close(self._video_fd)
-                logger.info(f"Closed video device: {self.device_path}")
-            except Exception as e:
-                logger.error(f"Error closing video device: {str(e)}")
-            finally:
-                self._video_fd = None
-        self.running = False
-
-    def read_frame(self):
-        try:
-            # Read a complete JPEG frame
-            data = b''
-            while self.running:
-                chunk = os.read(self._video_fd, 4096)
-                if not chunk:
-                    break
-                data += chunk
-                # Look for JPEG end marker
-                if b'\xff\xd9' in data:
-                    return data
-            return None
-        except Exception as e:
-            logger.error(f"Error reading video frame: {str(e)}")
-            return None
-
-    def stream_to_placeholder(self, placeholder, stop_event):
-        self.running = True
-        error_count = 0
-        max_errors = 5
-
-        while self.running and not stop_event.is_set():
-            try:
-                frame_data = self.read_frame()
-                if frame_data:
-                    b64_frame = base64.b64encode(frame_data).decode()
-                    placeholder.image(
-                        f"data:image/jpeg;base64,{b64_frame}",
-                        use_column_width=True
-                    )
-                    error_count = 0
-                    time.sleep(0.1)  # Limit frame rate
-                else:
-                    error_count += 1
-                    if error_count >= max_errors:
-                        logger.error("Too many consecutive frame read errors")
-                        break
-            except Exception as e:
-                logger.error(f"Streaming error: {str(e)}")
-                break
-
-        self.close()
-
-# ...existing code until the video feed section in main()...
-
-        # Video feed display
-        video_sources = get_device_video_sources(selected_device.id)
-        if not video_sources.empty:
-            st.subheader("Video Feed")
-            selected_video = st.selectbox(
-                "Select video source",
-                video_sources.itertuples(),
-                format_func=lambda x: x.device_name
-            )
-            
-            stream_container = st.empty()
-            col1, col2 = st.columns([1, 4])
-            
-            with col1:
-                start_stream = st.button("Start Stream")
-                stop_stream = st.button("Stop Stream")
-
-            if 'stop_event' not in st.session_state:
-                st.session_state.stop_event = threading.Event()
-
-            if start_stream:
-                st.session_state.stop_event.clear()
-                try:
-                    with VideoStream(selected_video.device_path) as stream:
-                        stream.stream_to_placeholder(stream_container, st.session_state.stop_event)
-                except Exception as e:
-                    st.error(f"Failed to start video stream: {str(e)}")
-
-            if stop_stream:
-                st.session_state.stop_event.set()
-                stream_container.empty()
-
-# ...remaining existing code...
