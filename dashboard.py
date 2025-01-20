@@ -26,6 +26,9 @@ VIDIOC_QUERYCAP = 0x80685600
 VIDIOC_ENUM_FMT = 0xc0405602
 V4L2_PIX_FMT_MJPEG = 0x47504A4D
 V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
+VIDIOC_S_FMT = 0x5605
+VIDIOC_G_FMT = 0x80685604
+V4L2_PIX_FMT_YUYV = 0x56595559
 
 # Configure logging
 logging.basicConfig(
@@ -245,6 +248,8 @@ class VideoStream:
         self.device_path = device_path
         self.is_running = False
         self._stop_event = threading.Event()
+        self.width = 640
+        self.height = 480
 
     def start(self):
         self.is_running = True
@@ -254,19 +259,52 @@ class VideoStream:
         self.is_running = False
         self._stop_event.set()
 
+    def _set_video_format(self, video_fd):
+        # Format struct: type, width, height, pixelformat, field, ...
+        format_struct = struct.pack('LLLLLL', V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                                  self.width, self.height, V4L2_PIX_FMT_YUYV,
+                                  0, 0)
+        try:
+            fcntl.ioctl(video_fd, VIDIOC_S_FMT, format_struct)
+        except Exception as e:
+            logger.error(f"Failed to set video format: {str(e)}")
+            return False
+        return True
+
     def read_frames(self, placeholder):
         try:
             with open(self.device_path, 'rb') as video:
+                if not self._set_video_format(video.fileno()):
+                    return
+
+                frame_size = self.width * self.height * 2  # YUYV = 2 bytes per pixel
                 while not self._stop_event.is_set():
                     try:
-                        data = video.read(614400)  # 640x480 YUYV
-                        if data:
-                            b64_frame = base64.b64encode(data).decode()
-                            placeholder.image(
-                                f"data:image/jpeg;base64,{b64_frame}",
-                                use_column_width=True
-                            )
+                        frame = video.read(frame_size)
+                        if not frame:
+                            break
+
+                        # Convert YUYV to JPEG (basic conversion, just for display)
+                        # In a production environment, you might want to use a proper
+                        # conversion library like OpenCV
+                        grey_frame = bytearray()
+                        for i in range(0, len(frame), 4):
+                            y1 = frame[i]
+                            grey_frame.extend([y1, y1, y1])
+                        
+                        b64_frame = base64.b64encode(bytes(grey_frame)).decode()
+                        placeholder.image(
+                            f"data:image/jpeg;base64,{b64_frame}",
+                            use_column_width=True,
+                            channels="RGB"
+                        )
                         time.sleep(0.1)
+                    except IOError as e:
+                        if e.errno == 11:  # Resource temporarily unavailable
+                            time.sleep(0.1)
+                            continue
+                        logger.error(f"Frame reading error: {str(e)}")
+                        break
                     except Exception as e:
                         logger.error(f"Frame reading error: {str(e)}")
                         break
