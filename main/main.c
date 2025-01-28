@@ -117,7 +117,7 @@ static const httpd_uri_t timer_post_uri = {    // Added new URI for POST
 // Add new URI handlers
 static const httpd_uri_t hostname_get_uri = {
     .uri       = "/api/hostname",
-    .method    = HTTP_GET,asdfasdfsdkjfgh
+    .method    = HTTP_GET,
     .handler   = hostname_get_handler,
     .user_ctx  = NULL
 };
