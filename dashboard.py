@@ -274,6 +274,26 @@ def get_historical_data(device_id, hours=24):
     finally:
         conn.close()
 
+def get_available_time_range(device_id):
+    conn = sqlite3.connect('sensor_data.db')
+    try:
+        query = """
+        SELECT 
+            MIN(timestamp) as first_reading,
+            MAX(timestamp) as last_reading
+        FROM readings 
+        WHERE device_id = ?
+        """
+        df = pd.read_sql_query(query, conn, params=(device_id,), parse_dates=['first_reading', 'last_reading'])
+        if df.empty or pd.isnull(df['first_reading'].iloc[0]):
+            return None, None
+        return df['first_reading'].iloc[0], df['last_reading'].iloc[0]
+    except Exception as e:
+        logger.error(f"Error fetching time range for device ID {device_id}: {str(e)}\n{traceback.format_exc()}")
+        return None, None
+    finally:
+        conn.close()
+
 def show_dashboard_page(selected_device):
     # Create a container for better spacing
     main_container = st.container()
@@ -432,48 +452,66 @@ def show_dashboard_page(selected_device):
         # Historical data with improved visuals
         st.markdown("### 📈 Historical Data")
         
-        time_options = {
-            "Last 6 hours": 6,
-            "Last 12 hours": 12,
-            "Last 24 hours": 24,
-            "Last 48 hours": 48,
-            "Last 72 hours": 72
-        }
-        selected_time = st.select_slider(
-            "Time Range",
-            options=list(time_options.keys()),
-            value="Last 24 hours"
-        )
+        # Get available time range
+        first_reading, last_reading = get_available_time_range(selected_device.id)
         
-        with st.spinner('Loading historical data...'):
-            df = get_historical_data(selected_device.id, time_options[selected_time])
+        if first_reading is None:
+            st.info("No historical data available for this device")
+        else:
+            # Calculate the total hours of available data
+            total_hours = (last_reading - first_reading).total_seconds() / 3600
             
-            if not df.empty:
-                # Temperature chart
-                fig1 = px.line(df, x='timestamp', y='temperature',
-                              title='Temperature History')
-                fig1.update_traces(line_color='#1e88e5')
-                fig1.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
-                    xaxis_gridcolor='#f0f2f6',
-                    yaxis_gridcolor='#f0f2f6'
-                )
-                st.plotly_chart(fig1, use_container_width=True)
+            # Create dynamic time options based on available data
+            time_options = []
+            for hours in [6, 12, 24, 48, 72]:
+                if hours <= total_hours:
+                    time_options.append(f"Last {hours} hours")
+            time_options.append("All data")
+            
+            if not time_options:
+                time_options = ["All data"]
+            
+            selected_time = st.select_slider(
+                "Time Range",
+                options=time_options,
+                value=time_options[-1]
+            )
+            
+            with st.spinner('Loading historical data...'):
+                # Get the number of hours for the query
+                if selected_time == "All data":
+                    hours = int(total_hours) + 1
+                else:
+                    hours = int(selected_time.split()[1])
+                    
+                df = get_historical_data(selected_device.id, hours)
                 
-                # Humidity chart
-                fig2 = px.line(df, x='timestamp', y='humidity',
-                              title='Humidity History')
-                fig2.update_traces(line_color='#43a047')
-                fig2.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
-                    xaxis_gridcolor='#f0f2f6',
-                    yaxis_gridcolor='#f0f2f6'
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.info("📊 No historical data available for the selected time range")
+                if not df.empty:
+                    # Temperature chart
+                    fig1 = px.line(df, x='timestamp', y='temperature',
+                                title='Temperature History')
+                    fig1.update_traces(line_color='#1e88e5')
+                    fig1.update_layout(
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        xaxis_gridcolor='#f0f2f6',
+                        yaxis_gridcolor='#f0f2f6'
+                    )
+                    st.plotly_chart(fig1, use_container_width=True)
+                    
+                    # Humidity chart
+                    fig2 = px.line(df, x='timestamp', y='humidity',
+                                title='Humidity History')
+                    fig2.update_traces(line_color='#43a047')
+                    fig2.update_layout(
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        xaxis_gridcolor='#f0f2f6',
+                        yaxis_gridcolor='#f0f2f6'
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    st.info("📊 No data available for the selected time range")
 
 # Initialize database and collector outside of main()
 init_db()
