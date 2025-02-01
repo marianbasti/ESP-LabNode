@@ -395,26 +395,16 @@ def show_dashboard_page(selected_device):
                     timer_enabled = st.toggle("Active", value=timer_data.get('enabled', False))
                 with timer_cols[1]:
                     on_duration = st.number_input("ON (seconds)", 
-                                                value=timer_data.get('onDuration', 0),
-                                                min_value=0,
+                                                value=timer_data.get('onDuration', 300),
+                                                min_value=1,
+                                                max_value=86400,  # 24 hours
                                                 step=5)
                 with timer_cols[2]:
                     off_duration = st.number_input("OFF (seconds)", 
-                                                 value=timer_data.get('offDuration', 0),
-                                                 min_value=0,
+                                                 value=timer_data.get('offDuration', 300),
+                                                 min_value=1,
+                                                 max_value=86400,  # 24 hours
                                                  step=5)
-
-                if st.button("💾 Save Timer Settings", use_container_width=True):
-                    with st.spinner('Updating timer configuration...'):
-                        timer_config = {
-                            "enabled": timer_enabled,
-                            "onDuration": on_duration,
-                            "offDuration": off_duration
-                        }
-                        if set_timer_config(selected_device.url, timer_config):
-                            st.success("Timer updated successfully")
-                        else:
-                            st.error("Failed to update timer")
 
         # Add after the Timer Settings section
         with control_cols[1]:
@@ -425,19 +415,21 @@ def show_dashboard_page(selected_device):
             humidity_cols = st.columns([2, 2, 2])
             with humidity_cols[0]:
                 threshold = st.number_input("Humidity Threshold (%)",
-                                        value=float(selected_device.humidity_threshold),
-                                        min_value=0.0,
+                                        value=float(selected_device.humidity_threshold or 50.0),
+                                        min_value=1.0,
                                         max_value=100.0,
                                         step=1.0)
             with humidity_cols[1]:
                 on_time = st.number_input("On Duration (seconds)",
-                                        value=int(selected_device.humidity_on_time),
-                                        min_value=0,
+                                        value=int(selected_device.humidity_on_time or 300),
+                                        min_value=1,
+                                        max_value=3600,  # 1 hour
                                         step=60)
             with humidity_cols[2]:
                 cooldown = st.number_input("Minimum Interval (seconds)",
-                                        value=int(selected_device.humidity_cooldown),
-                                        min_value=0,
+                                        value=int(selected_device.humidity_cooldown or 600),
+                                        min_value=1,
+                                        max_value=7200,  # 2 hours
                                         step=60)
 
             if st.button("💾 Save Humidity Settings", use_container_width=True):
@@ -613,12 +605,10 @@ def main():
             new_frequency = st.number_input(
                 "Reading Frequency (seconds)",
                 min_value=5,
-                value=current_frequency,
+                max_value=3600,  # 1 hour
+                value=current_frequency or 60,
                 step=5
             )
-            if new_frequency != current_frequency:
-                update_device_frequency(selected_device.id, new_frequency)
-                st.success(f"Updated reading frequency to {new_frequency} seconds")
 
         # Show dashboard content
         show_dashboard_page(selected_device)

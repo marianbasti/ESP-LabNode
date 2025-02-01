@@ -25,6 +25,6 @@ dependencies:
 direct_dependencies:
 - achimpieters/esp32-dht
 - idf
-manifest_hash: 0b39aa5811118dc69899cb5b4e3fe1a33ac39390552dc5f82f77c1034633596f
+manifest_hash: 8c29e20680b2e4a3de2ec3485122eefd0b2fa1ad82dc99bd3aebafc1ad2bfa05
 target: esp32
 version: 2.0.0

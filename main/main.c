@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_timer.h"
+#include "mdns.h"
 
 #define TAG "temcontrol"
 
@@ -25,7 +26,7 @@
 #define WIFI_FAIL_BIT      BIT1
 
 // Add new constant for default hostname
-#define DEFAULT_HOSTNAME "temcontrol"
+#define DEFAULT_HOSTNAME "ESP-LabNode"
 #define NVS_NAMESPACE "storage"
 #define NVS_KEY_HOSTNAME "hostname"
 
@@ -38,6 +39,34 @@
 #define DHT_TIMEOUT_US 10000
 #define DHT_START_SIGNAL_US 18000
 #define DHT_RESPONSE_SIGNAL_US 40
+
+// Add these defines after existing ones
+#define AP_SSID "ESP-Config"
+#define AP_PASS "configure123"
+#define AP_MAX_CONNECTIONS 1
+#define WIFI_CONNECT_TIMEOUT_MS 10000
+
+// Add these globals after existing ones
+static bool is_ap_mode = false;
+static esp_netif_t *ap_netif = NULL;
+
+// Add this HTML string near the top with other defines
+static const char *config_html = "<!DOCTYPE html><html>"
+    "<head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<style>body{font-family:Arial;margin:20px;} .n{margin:8px 0;}</style></head>"
+    "<body><h1>WiFi Configuration</h1>"
+    "<div id='networks'></div>"
+    "<div class='n'><input type='text' id='ssid' placeholder='SSID'></div>"
+    "<div class='n'><input type='password' id='pass' placeholder='Password'></div>"
+    "<div class='n'><button onclick='save()'>Save</button> "
+    "<button onclick='scan()'>Scan</button></div>"
+    "<script>function scan(){fetch('/api/scan').then(r=>r.json()).then(d=>"
+    "document.getElementById('networks').innerHTML=d.networks.map(n=>"
+    "`<div class='n'><a href='#' onclick='select(\"${n}\")'>${n}</a></div>`).join(''))};"
+    "function select(s){document.getElementById('ssid').value=s};"
+    "function save(){fetch('/api/wifi',{method:'POST',body:JSON.stringify({ssid:"
+    "document.getElementById('ssid').value,pass:document.getElementById('pass').value})})"
+    ".then(()=>alert('Saved. Device will restart.'))};scan();</script></body></html>";
 
 static EventGroupHandle_t wifi_event_group;
 static httpd_handle_t server = NULL;
@@ -69,6 +98,11 @@ static esp_err_t timer_handler(httpd_req_t *req);
 static esp_err_t hostname_get_handler(httpd_req_t *req);
 static esp_err_t hostname_post_handler(httpd_req_t *req);
 static void timer_control_task(void *pvParameters);
+
+// Add these new handler declarations after existing ones
+static esp_err_t config_get_handler(httpd_req_t *req);
+static esp_err_t scan_get_handler(httpd_req_t *req);
+static esp_err_t wifi_post_handler(httpd_req_t *req);
 
 // Initialize GPIO
 static void initialize_gpio(void) {
@@ -129,17 +163,44 @@ static const httpd_uri_t hostname_post_uri = {
     .user_ctx  = NULL
 };
 
+// Add these new URI handlers after existing ones
+static const httpd_uri_t config_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = config_get_handler,
+};
+
+static const httpd_uri_t scan_uri = {
+    .uri       = "/api/scan",
+    .method    = HTTP_GET,
+    .handler   = scan_get_handler,
+};
+
+static const httpd_uri_t wifi_uri = {
+    .uri       = "/api/wifi",
+    .method    = HTTP_POST,
+    .handler   = wifi_post_handler,
+};
+
 // Start HTTP server
 static httpd_handle_t start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     
     if (httpd_start(&server, &config) == ESP_OK) {
-        httpd_register_uri_handler(server, &sensor_uri);
-        httpd_register_uri_handler(server, &relay_uri);
-        httpd_register_uri_handler(server, &timer_uri);        // Register GET handler
-        httpd_register_uri_handler(server, &timer_post_uri);   // Register POST handler
-        httpd_register_uri_handler(server, &hostname_get_uri);
-        httpd_register_uri_handler(server, &hostname_post_uri);
+        if (is_ap_mode) {
+            // AP mode handlers
+            httpd_register_uri_handler(server, &config_uri);
+            httpd_register_uri_handler(server, &scan_uri);
+            httpd_register_uri_handler(server, &wifi_uri);
+        } else {
+            // Normal mode handlers
+            httpd_register_uri_handler(server, &sensor_uri);
+            httpd_register_uri_handler(server, &relay_uri);
+            httpd_register_uri_handler(server, &timer_uri);        // Register GET handler
+            httpd_register_uri_handler(server, &timer_post_uri);   // Register POST handler
+            httpd_register_uri_handler(server, &hostname_get_uri);
+            httpd_register_uri_handler(server, &hostname_post_uri);
+        }
         return server;
     }
     return NULL;
@@ -184,31 +245,175 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
+// Add these new handler implementations before app_main
+static esp_err_t config_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, config_html, strlen(config_html));
+    return ESP_OK;
+}
+
+static esp_err_t scan_get_handler(httpd_req_t *req) {
+    wifi_scan_config_t scan_config = {
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_PASSIVE,
+        .scan_time.passive = 500
+    };
+    
+    // Start scan
+    ESP_ERROR_CHECK(esp_wifi_scan_start(&scan_config, true));
+    
+    // Get results
+    uint16_t ap_count = 0;
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
+    if (ap_count > 20) ap_count = 20;
+    
+    wifi_ap_record_t ap_records[20];
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, ap_records));
+    
+    // Build JSON response
+    char *response = malloc(2048);
+    strcpy(response, "{\"networks\":[");
+    
+    for (int i = 0; i < ap_count; i++) {
+        if (i > 0) strcat(response, ",");
+        strcat(response, "\"");
+        strcat(response, (char *)ap_records[i].ssid);
+        strcat(response, "\"");
+    }
+    strcat(response, "]}");
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, strlen(response));
+    free(response);
+    
+    return ESP_OK;
+}
+
+static esp_err_t wifi_post_handler(httpd_req_t *req) {
+    char buf[128];
+    nvs_handle_t nvs_handle;
+    
+    int ret = httpd_req_recv(req, buf, sizeof(buf));
+    if (ret <= 0) return ESP_FAIL;
+    buf[ret] = '\0';
+    
+    // Parse JSON (simple parsing)
+    char ssid[33] = {0};
+    char pass[65] = {0};
+    char *ssid_start = strstr(buf, "\"ssid\":\"");
+    char *pass_start = strstr(buf, "\"pass\":\"");
+    
+    if (ssid_start && pass_start) {
+        ssid_start += 8;
+        pass_start += 8;
+        char *ssid_end = strchr(ssid_start, '"');
+        char *pass_end = strchr(pass_start, '"');
+        
+        if (ssid_end && pass_end) {
+            strncpy(ssid, ssid_start, ssid_end - ssid_start);
+            strncpy(pass, pass_start, pass_end - pass_start);
+            
+            // Store in NVS
+            ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
+            ESP_ERROR_CHECK(nvs_set_str(nvs_handle, "wifi_ssid", ssid));
+            ESP_ERROR_CHECK(nvs_set_str(nvs_handle, "wifi_pass", pass));
+            ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+            nvs_close(nvs_handle);
+            
+            httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+            
+            // Delay restart to allow response to be sent
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+            return ESP_OK;
+        }
+    }
+    
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+    return ESP_FAIL;
+}
+
 // Initialize WiFi
 static void initialize_wifi(void) {
     wifi_event_group = xEventGroupCreate();
-
+    
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
+    // Create default STA and AP interfaces
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    assert(sta_netif);
-
+    ap_netif = esp_netif_create_default_wifi_ap();
+    
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
+    
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = CONFIG_WIFI_SSID,
-            .password = CONFIG_WIFI_PASSWORD,
+    
+    // Try to load saved credentials
+    nvs_handle_t nvs_handle;
+    char ssid[33] = {0};
+    char pass[65] = {0};
+    size_t len = sizeof(ssid);
+    
+    if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
+        if (nvs_get_str(nvs_handle, "wifi_ssid", ssid, &len) == ESP_OK) {
+            len = sizeof(pass);
+            if (nvs_get_str(nvs_handle, "wifi_pass", pass, &len) == ESP_OK) {
+                // Configure station with saved credentials
+                wifi_config_t wifi_config = {
+                    .sta = {
+                        .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+                        .pmf_cfg = {
+                            .capable = true,
+                            .required = false
+                        },
+                    },
+                };
+                strcpy((char *)wifi_config.sta.ssid, ssid);
+                strcpy((char *)wifi_config.sta.password, pass);
+                
+                ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+                ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+                ESP_ERROR_CHECK(esp_wifi_start());
+                
+                // Wait for connection
+                EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                    WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                    pdFALSE,
+                    pdFALSE,
+                    pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
+                
+                if (bits & WIFI_CONNECTED_BIT) {
+                    ESP_LOGI(TAG, "Connected to saved network");
+                    nvs_close(nvs_handle);
+                    return;
+                }
+            }
+        }
+        nvs_close(nvs_handle);
+    }
+    
+    // If we get here, either no saved credentials or connection failed
+    ESP_LOGI(TAG, "Starting AP mode");
+    is_ap_mode = true;
+    
+    wifi_config_t ap_config = {
+        .ap = {
+            .ssid = AP_SSID,
+            .ssid_len = strlen(AP_SSID),
+            .password = AP_PASS,
+            .max_connection = AP_MAX_CONNECTIONS,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK
         },
     };
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    
+    // Start configuration web server
+    start_webserver();
 }
 
 // Add helper function for JSON string creation
@@ -481,7 +686,7 @@ static esp_err_t hostname_post_handler(httpd_req_t *req) {
     // Parse hostname from JSON
     char *hostname_start = strstr(buf, "\"hostname\":\"");
     if (hostname_start) {
-        hostname_start += 11; // Skip "hostname":"
+        hostname_start += 11;
         char *hostname_end = strchr(hostname_start, '"');
         if (hostname_end) {
             *hostname_end = '\0';
@@ -493,6 +698,16 @@ static esp_err_t hostname_post_handler(httpd_req_t *req) {
                 nvs_set_str(nvs_handle, NVS_KEY_HOSTNAME, hostname_start);
                 nvs_commit(nvs_handle);
                 nvs_close(nvs_handle);
+                
+                // Update network hostname
+                esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                if (netif) {
+                    esp_netif_set_hostname(netif, hostname_start);
+                }
+                
+                // Update mDNS hostname
+                mdns_hostname_set(hostname_start);
+                mdns_instance_name_set(hostname_start);
             }
         }
     }
