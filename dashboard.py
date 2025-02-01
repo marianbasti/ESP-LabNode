@@ -396,13 +396,13 @@ def show_dashboard_page(selected_device):
                 with timer_cols[1]:
                     on_duration = st.number_input("ON (seconds)", 
                                                 value=timer_data.get('onDuration', 300),
-                                                min_value=1,
+                                                min_value=0,
                                                 max_value=86400,  # 24 hours
                                                 step=5)
                 with timer_cols[2]:
                     off_duration = st.number_input("OFF (seconds)", 
                                                  value=timer_data.get('offDuration', 300),
-                                                 min_value=1,
+                                                 min_value=0,
                                                  max_value=86400,  # 24 hours
                                                  step=5)
 
@@ -416,19 +416,19 @@ def show_dashboard_page(selected_device):
             with humidity_cols[0]:
                 threshold = st.number_input("Humidity Threshold (%)",
                                         value=float(selected_device.humidity_threshold or 50.0),
-                                        min_value=1.0,
+                                        min_value=0,
                                         max_value=100.0,
                                         step=1.0)
             with humidity_cols[1]:
                 on_time = st.number_input("On Duration (seconds)",
                                         value=int(selected_device.humidity_on_time or 300),
-                                        min_value=1,
+                                        min_value=0,
                                         max_value=3600,  # 1 hour
                                         step=60)
             with humidity_cols[2]:
                 cooldown = st.number_input("Minimum Interval (seconds)",
                                         value=int(selected_device.humidity_cooldown or 600),
-                                        min_value=1,
+                                        min_value=0,
                                         max_value=7200,  # 2 hours
                                         step=60)
 
