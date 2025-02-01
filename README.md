@@ -8,6 +8,10 @@ CONFIG_WIFI_PASSWORD="your_password_here"
 ```
 y luego compilamos y flasheamos main.c al ESP32.
 ### Web UI
+Setear contraseña en variable de entorno:
+```
+GUI_PW=password1234
+```
 Instalamos las dependencias de python:
 ```
 pip install -r requirements.txt
