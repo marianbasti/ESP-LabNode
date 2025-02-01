@@ -416,7 +416,7 @@ def show_dashboard_page(selected_device):
             with humidity_cols[0]:
                 threshold = st.number_input("Humidity Threshold (%)",
                                         value=float(selected_device.humidity_threshold or 50.0),
-                                        min_value=0,
+                                        min_value=0.0,
                                         max_value=100.0,
                                         step=1.0)
             with humidity_cols[1]:
